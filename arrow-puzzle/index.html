@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Найди иголку в стоге сена</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #8ecae6; font-family: system-ui, -apple-system, sans-serif;
+    user-select: none; -webkit-user-select: none; touch-action: none;
+  }
+  canvas { display: block; }
+
+  #hud {
+    position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,0.55); color: #fff; padding: 8px 16px;
+    border-radius: 20px; font-size: 14px; pointer-events: none;
+    text-align: center; backdrop-filter: blur(6px);
+    max-width: 92vw; line-height: 1.35; z-index: 5;
+  }
+
+  #joystick {
+    position: fixed; left: 22px; bottom: 22px;
+    width: 130px; height: 130px; border-radius: 50%;
+    background: rgba(255,255,255,0.12); border: 2px solid rgba(255,255,255,0.35);
+    display: none; touch-action: none; z-index: 5;
+  }
+  #knob {
+    position: absolute; left: 50%; top: 50%;
+    width: 56px; height: 56px; margin: -28px 0 0 -28px;
+    border-radius: 50%; background: rgba(255,255,255,0.6);
+    box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+    pointer-events: none;
+  }
+  #jumpBtn {
+    position: fixed; right: 28px; bottom: 42px;
+    width: 86px; height: 86px; border-radius: 50%;
+    background: rgba(255,255,255,0.28); border: 2px solid rgba(255,255,255,0.55);
+    color: #fff; font-size: 13px; font-weight: 700; letter-spacing: 1px;
+    display: none; touch-action: none; cursor: pointer;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.5); z-index: 5;
+  }
+  @media (pointer: coarse) {
+    #joystick, #jumpBtn { display: block; }
+  }
+
+  #win {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.78);
+    display: none; align-items: center; justify-content: center;
+    flex-direction: column; gap: 22px; color: #fff; text-align: center;
+    padding: 24px; z-index: 10;
+    animation: fadeIn 0.4s ease;
+  }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  #win h1 {
+    font-size: clamp(24px, 6vw, 42px); color: #ffd700;
+    text-shadow: 0 0 24px rgba(255,215,0,0.7);
+  }
+  #win p { font-size: 16px; opacity: 0.85; max-width: 340px; line-height: 1.5; }
+  #win button {
+    padding: 14px 34px; font-size: 18px; font-weight: 700;
+    background: linear-gradient(180deg, #ffe066, #ffc300);
+    color: #333; border: none; border-radius: 30px;
+    cursor: pointer; box-shadow: 0 6px 18px rgba(255,200,0,0.45);
+    transition: transform 0.1s;
+  }
+  #win button:active { transform: scale(0.96); }
+</style>
+</head>
+<body>
+
+<div id="hud">Ищи иголку в стоге сена 🧵 — WASD / Space / мышь</div>
+
+<div id="joystick"><div id="knob"></div></div>
+<button id="jumpBtn">JUMP</button>
+
+<div id="win">
+  <h1>🧵 Иголка найдена!</h1>
+  <p>Ты нашёл её в стоге сена. Попробуй ещё раз — она будет в другом месте!</p>
+  <button id="againBtn">Играть ещё</button>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+// ============================================================
+// RENDERER / SCENE / CAMERA
+// ============================================================
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x8ecae6);
+scene.fog = new THREE.Fog(0x8ecae6, 28, 75);
+
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 200);
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ============================================================
+// LIGHTS
+// ============================================================
+scene.add(new THREE.HemisphereLight(0xffffff, 0x556633, 0.7));
+
+const sun = new THREE.DirectionalLight(0xfff4e0, 1.35);
+sun.position.set(14, 24, 12);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.near = 1;
+sun.shadow.camera.far = 70;
+sun.shadow.camera.left = -20;
+sun.shadow.camera.right = 20;
+sun.shadow.camera.top = 20;
+sun.shadow.camera.bottom = -20;
+sun.shadow.bias = -0.0006;
+scene.add(sun);
+
+// ============================================================
+// GROUND
+// ============================================================
+const groundGeo = new THREE.PlaneGeometry(200, 200);
+groundGeo.rotateX(-Math.PI / 2);
+const ground = new THREE.Mesh(
+  groundGeo,
+  new THREE.MeshStandardMaterial({ color: 0x6ab04c, roughness: 1 })
+);
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ============================================================
+// HAYSTACK TEXTURE (procedural straw)
+// ============================================================
+function makeStrawTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#d4a12c';
+  ctx.fillRect(0, 0, 512, 512);
+  ctx.lineCap = 'round';
+  for (let i = 0; i < 3500; i++) {
+    const h = 38 + Math.random() * 18;
+    const s = 55 + Math.random() * 25;
+    const l = 32 + Math.random() * 32;
+    ctx.strokeStyle = `hsl(${h}, ${s}%, ${l}%)`;
+    ctx.lineWidth = 0.8 + Math.random() * 2.2;
+    const x = Math.random() * 512;
+    const y = Math.random() * 512;
+    const len = 8 + Math.random() * 32;
+    const ang = Math.random() * Math.PI * 2;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + Math.cos(ang) * len, y + Math.sin(ang) * len);
+    ctx.stroke();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(3, 3);
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return tex;
+}
+
+// ============================================================
+// HAYSTACK (deformable)
+// ============================================================
+const HAY_R = 3;
+const HAY_SCALE_Y = 1.15;
+const HAY_CENTER_Y = HAY_R * HAY_SCALE_Y;
+
+const hayGeo = new THREE.SphereGeometry(HAY_R, 64, 40);
+hayGeo.scale(1, HAY_SCALE_Y, 1);
+hayGeo.translate(0, HAY_CENTER_Y, 0);
+
+const hayMat = new THREE.MeshStandardMaterial({
+  map: makeStrawTexture(),
+  roughness: 0.95,
+  metalness: 0.02
+});
+const haystack = new THREE.Mesh(hayGeo, hayMat);
+haystack.castShadow = true;
+haystack.receiveShadow = true;
+scene.add(haystack);
+
+const hayPosAttr = hayGeo.attributes.position;
+const hayRest    = new Float32Array(hayPosAttr.array);
+const hayCurrent = new Float32Array(hayPosAttr.array);
+
+// ============================================================
+// PLAYER
+// ============================================================
+const playerRoot = new THREE.Group();
+scene.add(playerRoot);
+
+// body
+const bodyMesh = new THREE.Mesh(
+  new THREE.CapsuleGeometry(0.35, 0.5, 6, 12),
+  new THREE.MeshStandardMaterial({ color: 0x2d7dd2, roughness: 0.7 })
+);
+bodyMesh.position.y = 0.6;
+bodyMesh.castShadow = true;
+playerRoot.add(bodyMesh);
+
+// head
+const headMesh = new THREE.Mesh(
+  new THREE.SphereGeometry(0.32, 20, 20),
+  new THREE.MeshStandardMaterial({ color: 0xffcc99, roughness: 0.8 })
+);
+headMesh.position.y = 1.18;
+headMesh.castShadow = true;
+playerRoot.add(headMesh);
+
+// eyes
+const eyeGeo = new THREE.SphereGeometry(0.055, 10, 10);
+const eyeMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+for (const sx of [-1, 1]) {
+  const eye = new THREE.Mesh(eyeGeo, eyeMat);
+  eye.position.set(0.11 * sx, 1.24, 0.28);
+  playerRoot.add(eye);
+}
+
+// hat
+const hat = new THREE.Mesh(
+  new THREE.ConeGeometry(0.4, 0.3, 16),
+  new THREE.MeshStandardMaterial({ color: 0x8b4513, roughness: 0.9 })
+);
+hat.position.y = 1.5;
+hat.castShadow = true;
+playerRoot.add(hat);
+
+const PLAYER_CENTER_Y = 0.72;
+const player = {
+  pos: new THREE.Vector3(0, 0, 8),
+  vel: new THREE.Vector3(),
+  onGround: false,
+  facing: Math.PI
+};
+
+// ============================================================
+// NEEDLE
+// ============================================================
+const needleGroup = new THREE.Group();
+{
+  const bodyM = new THREE.MeshStandardMaterial({
+    color: 0xeeeeee, metalness: 1, roughness: 0.15,
+    emissive: 0xffcc00, emissiveIntensity: 0.6
+  });
+  const needleBody = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.018, 0.008, 0.32, 8),
+    bodyM
+  );
+  needleBody.rotation.z = Math.PI / 2;
+  needleGroup.add(needleBody);
+
+  const eyeM = new THREE.MeshStandardMaterial({
+    color: 0xdddddd, metalness: 1, roughness: 0.2,
+    emissive: 0xffcc00, emissiveIntensity: 0.6
+  });
+  const needleEye = new THREE.Mesh(
+    new THREE.TorusGeometry(0.035, 0.008, 8, 16),
+    eyeM
+  );
+  needleEye.position.x = 0.17;
+  needleEye.rotation.y = Math.PI / 2;
+  needleGroup.add(needleEye);
+
+  const glow = new THREE.PointLight(0xffdd66, 2, 2.6, 2);
+  needleGroup.add(glow);
+
+  needleGroup.userData = { glow, mats: [bodyM, eyeM] };
+}
+scene.add(needleGroup);
+
+// ============================================================
+// GAME STATE
+// ============================================================
+let found = false;
+
+function randomNeedlePos() {
+  const angle = Math.random() * Math.PI * 2;
+  const ny = 0.5 + Math.random() * 2.0;
+  const hNorm = (ny - HAY_CENTER_Y) / (HAY_R * HAY_SCALE_Y);
+  const maxR = Math.sqrt(Math.max(0.05, 1 - hNorm * hNorm)) * HAY_R * 0.85;
+  const nr = maxR * (0.25 + Math.random() * 0.6);
+  return new THREE.Vector3(Math.cos(angle) * nr, ny, Math.sin(angle) * nr);
+}
+
+function placeNeedle() {
+  needleGroup.position.copy(randomNeedlePos());
+  needleGroup.rotation.set(
+    (Math.random() - 0.5) * 0.8,
+    Math.random() * Math.PI * 2,
+    (Math.random() - 0.5) * 0.8
+  );
+}
+
+function restart() {
+  player.pos.set(0, 0, 8);
+  player.vel.set(0, 0, 0);
+  player.facing = Math.PI;
+  player.onGround = false;
+  placeNeedle();
+  found = false;
+  document.getElementById('win').style.display = 'none';
+}
+
+// ============================================================
+// CAMERA ORBIT
+// ============================================================
+const cam = { yaw: 0, pitch: 0.42, distance: 8.5, targetHeight: 0.9 };
+
+function updateCamera() {
+  const tx = player.pos.x;
+  const ty = player.pos.y + cam.targetHeight;
+  const tz = player.pos.z;
+  const cp = Math.cos(cam.pitch);
+  camera.position.set(
+    tx + Math.sin(cam.yaw) * cp * cam.distance,
+    ty + Math.sin(cam.pitch) * cam.distance,
+    tz + Math.cos(cam.yaw) * cp * cam.distance
+  );
+  camera.lookAt(tx, ty, tz);
+}
+
+// ============================================================
+// INPUT
+// ============================================================
+const keys = Object.create(null);
+let jumpQueued = false;
+
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space' && !e.repeat) jumpQueued = true;
+  keys[e.code] = true;
+  if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
+});
+window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+// Mouse drag camera
+let mouseDown = false;
+let lastMouse = null;
+renderer.domElement.addEventListener('mousedown', (e) => {
+  if (e.button === 0 || e.button === 2) mouseDown = true;
+});
+window.addEventListener('mouseup', () => { mouseDown = false; });
+window.addEventListener('mousemove', (e) => {
+  if (mouseDown && lastMouse) {
+    cam.yaw   -= (e.clientX - lastMouse.x) * 0.004;
+    cam.pitch  = Math.max(0.1, Math.min(1.35, cam.pitch + (e.clientY - lastMouse.y) * 0.004));
+  }
+  lastMouse = { x: e.clientX, y: e.clientY };
+});
+renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
+
+// Touch drag camera (canvas)
+let lookTouchId = null;
+let lookLast = null;
+renderer.domElement.addEventListener('touchstart', (e) => {
+  if (lookTouchId !== null) return;
+  const t = e.changedTouches[0];
+  lookTouchId = t.identifier;
+  lookLast = { x: t.clientX, y: t.clientY };
+}, { passive: true });
+renderer.domElement.addEventListener('touchmove', (e) => {
+  for (const t of e.changedTouches) {
+    if (t.identifier === lookTouchId && lookLast) {
+      cam.yaw   -= (t.clientX - lookLast.x) * 0.006;
+      cam.pitch  = Math.max(0.1, Math.min(1.35, cam.pitch + (t.clientY - lookLast.y) * 0.006));
+      lookLast.x = t.clientX;
+      lookLast.y = t.clientY;
+    }
+  }
+  e.preventDefault();
+}, { passive: false });
+function endLook(e) {
+  for (const t of e.changedTouches) if (t.identifier === lookTouchId) {
+    lookTouchId = null; lookLast = null;
+  }
+}
+renderer.domElement.addEventListener('touchend', endLook);
+renderer.domElement.addEventListener('touchcancel', endLook);
+
+// Joystick
+const joyEl = document.getElementById('joystick');
+const knobEl = document.getElementById('knob');
+let joyId = null;
+const joyVec = { x: 0, y: 0 };
+const JOY_R = 42;
+
+function joyUpdate(clientX, clientY) {
+  const r = joyEl.getBoundingClientRect();
+  let dx = clientX - (r.left + r.width / 2);
+  let dy = clientY - (r.top  + r.height / 2);
+  const d = Math.hypot(dx, dy);
+  if (d > JOY_R) { dx = dx / d * JOY_R; dy = dy / d * JOY_R; }
+  joyVec.x = dx / JOY_R;
+  joyVec.y = dy / JOY_R;
+  knobEl.style.transform = `translate(${dx}px, ${dy}px)`;
+}
+function resetJoy() {
+  joyVec.x = joyVec.y = 0;
+  knobEl.style.transform = '';
+}
+joyEl.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  if (joyId !== null) return;
+  const t = e.changedTouches[0];
+  joyId = t.identifier;
+  joyUpdate(t.clientX, t.clientY);
+}, { passive: false });
+joyEl.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  for (const t of e.changedTouches) if (t.identifier === joyId) joyUpdate(t.clientX, t.clientY);
+}, { passive: false });
+function joyEnd(e) {
+  for (const t of e.changedTouches) if (t.identifier === joyId) { joyId = null; resetJoy(); }
+}
+joyEl.addEventListener('touchend', joyEnd);
+joyEl.addEventListener('touchcancel', joyEnd);
+
+// Jump button
+const jumpBtn = document.getElementById('jumpBtn');
+jumpBtn.addEventListener('touchstart', (e) => { e.preventDefault(); jumpQueued = true; }, { passive: false });
+jumpBtn.addEventListener('mousedown',  (e) => { e.preventDefault(); jumpQueued = true; });
+
+// Restart button
+document.getElementById('againBtn').addEventListener('click', restart);
+
+// ============================================================
+// MAIN LOOP
+// ============================================================
+const clock = new THREE.Clock();
+
+function update(dt) {
+  // --- movement direction (camera-relative) ---
+  const forward = new THREE.Vector3(-Math.sin(cam.yaw), 0, -Math.cos(cam.yaw));
+  const right   = new THREE.Vector3( Math.cos(cam.yaw), 0, -Math.sin(cam.yaw));
+
+  const move = new THREE.Vector3();
+  if (keys['KeyW'] || keys['ArrowUp'])    move.add(forward);
+  if (keys['KeyS'] || keys['ArrowDown'])  move.sub(forward);
+  if (keys['KeyD'] || keys['ArrowRight']) move.add(right);
+  if (keys['KeyA'] || keys['ArrowLeft'])  move.sub(right);
+
+  if (Math.abs(joyVec.x) > 0.08 || Math.abs(joyVec.y) > 0.08) {
+    move.addScaledVector(forward, -joyVec.y);
+    move.addScaledVector(right,     joyVec.x);
+  }
+  if (move.lengthSq() > 0) move.normalize();
+
+  // --- jump ---
+  if (jumpQueued && player.onGround) {
+    player.vel.y = 8.5;
+    player.onGround = false;
+  }
+  jumpQueued = false;
+
+  // --- horizontal accel ---
+  const SPEED = 5.0, ACCEL = 14;
+  player.vel.x += (move.x * SPEED - player.vel.x) * Math.min(1, ACCEL * dt);
+  player.vel.z += (move.z * SPEED - player.vel.z) * Math.min(1, ACCEL * dt);
+
+  // --- gravity ---
+  player.vel.y -= 22 * dt;
+
+  // --- integrate ---
+  player.pos.addScaledVector(player.vel, dt);
+  if (player.pos.y <= 0) {
+    player.pos.y = 0;
+    player.vel.y = 0;
+    player.onGround = true;
+  }
+
+  // --- face movement direction ---
+  if (move.lengthSq() > 0.001) {
+    const target = Math.atan2(move.x, move.z);
+    let diff = target - player.facing;
+    while (diff >  Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    player.facing += diff * Math.min(1, 12 * dt);
+  }
+
+  playerRoot.position.copy(player.pos);
+  playerRoot.rotation.y = player.facing;
+
+  // --- HAYSTACK DEFORMATION ---
+  const px = player.pos.x;
+  const py = player.pos.y + PLAYER_CENTER_Y;
+  const pz = player.pos.z;
+
+  const R_INF    = 2.2;
+  const R_CAVITY = 1.55;
+  const FOLLOW   = 22;
+  const k = 1 - Math.exp(-FOLLOW * dt);
+  const R_INF_SQ = R_INF * R_INF;
+
+  const posArr = hayPosAttr.array;
+  for (let i = 0; i < posArr.length; i += 3) {
+    const rx = hayRest[i], ry = hayRest[i + 1], rz = hayRest[i + 2];
+    const dx = rx - px, dy = ry - py, dz = rz - pz;
+    const distSq = dx * dx + dy * dy + dz * dz;
+
+    let tx = rx, ty = ry, tz = rz;
+
+    if (distSq < R_INF_SQ) {
+      const dist = Math.sqrt(distSq);
+      const t  = 1 - dist / R_INF;
+      const st = t * t * (3 - 2 * t);
+      const push = Math.max(R_CAVITY - dist, 0) * st;
+      const newDist = dist + push;
+      if (dist > 0.001) {
+        const s = newDist / dist;
+        tx = px + dx * s;
+        ty = py + dy * s;
+        tz = pz + dz * s;
+      }
+    }
+
+    hayCurrent[i]     += (tx - hayCurrent[i])     * k;
+    hayCurrent[i + 1] += (ty - hayCurrent[i + 1]) * k;
+    hayCurrent[i + 2] += (tz - hayCurrent[i + 2]) * k;
+
+    posArr[i]     = hayCurrent[i];
+    posArr[i + 1] = hayCurrent[i + 1];
+    posArr[i + 2] = hayCurrent[i + 2];
+  }
+  hayPosAttr.needsUpdate = true;
+  hayGeo.computeVertexNormals();
+
+  // --- NEEDLE ---
+  const ndx = player.pos.x - needleGroup.position.x;
+  const ndy = (player.pos.y + PLAYER_CENTER_Y) - needleGroup.position.y;
+  const ndz = player.pos.z - needleGroup.position.z;
+  const dNeedle = Math.sqrt(ndx*ndx + ndy*ndy + ndz*ndz);
+
+  const glowAmount = Math.max(0, 1 - dNeedle / 3);
+  for (const m of needleGroup.userData.mats) m.emissiveIntensity = 0.4 + glowAmount * 2.5;
+  needleGroup.userData.glow.intensity = 0.5 + glowAmount * 4;
+
+  needleGroup.rotation.y += dt * 0.8;
+
+  if (!found && dNeedle < 0.75) {
+    found = true;
+    document.getElementById('win').style.display = 'flex';
+  }
+
+  updateCamera();
+}
+
+function animate() {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  if (!found) update(dt);
+  renderer.render(scene, camera);
+  requestAnimationFrame(animate);
+}
+
+// ============================================================
+// BOOT
+// ============================================================
+if (window.matchMedia('(pointer: coarse)').matches) {
+  document.getElementById('hud').textContent =
+    'Ищи иголку в стоге сена 🧵 — стик / JUMP / свайп по экрану';
+}
+
+restart();
+updateCamera();
+animate();
+</script>
+</body>
+</html>
